@@ -12,6 +12,7 @@ const {tmpdir} = require('os');
 const fs = require('fs-extra');
 const { promisify } = require('util');
 const convert = require('heic-convert');
+const moment = require('moment');
 
 const THUMB_MAX_WIDTH = 200;
 const THUMB_MAX_HEIGHT = 200;
@@ -176,10 +177,16 @@ exports.generateThumbnail = functions.runWith({memory: '1GB', timeoutSeconds: '3
 
 
         firebaseData['output'][size] = {
-          "start" : start,
+          'start' : start,
           'end' : end,
+          'OriginalName' : fileName,
+          'format' : fileName.split(".")[1],
+          "StandsStart" : moment(start).format('LLLL'),
+          'StandsEnd' : moment(end).format('LLLL'),
           'elapsed' : end -start,
           'bytes' : fileSize.size,
+          'width' : size,
+          'height' : size,
           'urlAccess' : thumbFileUrl,
           'status' : 'success',
           'error' : 'no'
@@ -197,7 +204,7 @@ exports.generateThumbnail = functions.runWith({memory: '1GB', timeoutSeconds: '3
 
 
     
-    imageKey = imageKey.replace('.','_');
+    imageKey = imageKey.replace(/[&\/\\#, +()$~%.'":*?<>{}]/g, '_');
 
     const imageRef = refImage.child(imageKey);
     await imageRef.set(firebaseData);
