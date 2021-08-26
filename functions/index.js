@@ -58,6 +58,7 @@ exports.generateThumbnail = functions.runWith({memory: '1GB', timeoutSeconds: '3
     let bucket = gcs.bucket(object.bucket);
     let filePath = object.name;
     let fileName = filePath.split('/').pop();
+    let isHeicSmall = false;
     // let bucketDir = dirname(filePath);
 
     let imageKey = fileName+"_"+new Date().getTime().toString();
@@ -71,6 +72,8 @@ exports.generateThumbnail = functions.runWith({memory: '1GB', timeoutSeconds: '3
         "timestamp" : new Date().getTime()
       }
     }
+
+    firebaseData['conversion'] = 'none';
 
     const refImage = db.ref('log');
 
@@ -108,7 +111,15 @@ exports.generateThumbnail = functions.runWith({memory: '1GB', timeoutSeconds: '3
       sizes.push(THUMB_MAX_1000);
     }
 
+    // Convert HEIC image into JPEG image format 
     if(object.contentType.includes('octet-stream') || object.contentType.includes('heic')){
+
+      firebaseData['conversion'] = 'HEICtoJPEG'
+
+      if(!sizes.includes(800)){
+        isHeicSmall = true;
+        sizes.push(THUMB_MAX_1000);
+      }
 
      
       const inputBuffer = await promisify(fs.readFile)(tmpFilePath);
@@ -122,15 +133,10 @@ exports.generateThumbnail = functions.runWith({memory: '1GB', timeoutSeconds: '3
 
       await promisify(fs.writeFile)(tmpFilePath, outputBuffer);
 
-      
-      
     }
-
-
 
    firebaseData['output'] = {}
 
-  //  let file['output'] = {}
 
     const uploadPromises = sizes.map(async size => {
 
@@ -139,14 +145,33 @@ exports.generateThumbnail = functions.runWith({memory: '1GB', timeoutSeconds: '3
 
       let start = new Date().getTime()
 
-    // Sharp docs  https://sharp.pixelplumbing.com/api-resize
-      await sharp(tmpFilePath)
-        .resize(size, size,{
-          fit: sharp.fit.inside,
-          withoutEnlargement: true
-        })
-        .toFile(thumbPath);
-      
+    //  Move download file with scaling 
+      if(isHeicSmall && size == 800){
+
+        fs.rename(tmpFilePath, thumbPath, function (err) {
+          if (err) {
+              throw err
+          } else {
+              console.log("Successfully moved the file!");
+          }
+      });
+      }
+      else{
+
+        // Scaling operation
+         // Sharp docs  https://sharp.pixelplumbing.com/api-resize
+          await sharp(tmpFilePath)
+          .resize(size, size,{
+            fit: sharp.fit.inside,
+            withoutEnlargement: true
+          })
+          .toFile(thumbPath);
+
+          functions.logger.log("Image converted => ",size);
+    
+      }
+
+   
         bucketDir = "thumbnails"+size.toString();
 
         var fileSize = fs.statSync(thumbPath);
@@ -156,11 +181,12 @@ exports.generateThumbnail = functions.runWith({memory: '1GB', timeoutSeconds: '3
 
         const thumbFile = bucket.file(uploadPath);
        
+         // Upload to GCS
         await bucket.upload(thumbPath, {
           destination: join(bucketDir, thumbName)
         });
 
-
+        // Get signUrl 
       const results = await Promise.all([
         thumbFile.getSignedUrl({
           action: 'read',
@@ -173,34 +199,47 @@ exports.generateThumbnail = functions.runWith({memory: '1GB', timeoutSeconds: '3
 
       console.log(size +' url => '+thumbFileUrl);
 
-        let end = new Date().getTime()
+        let end = new Date().getTime();
 
+        let formatArr = fileName.split(".")
+
+        let format = formatArr[formatArr.length-1];
 
         firebaseData['output'][size] = {
           'start' : start,
           'end' : end,
-          'OriginalName' : fileName,
-          'format' : fileName.split(".")[1],
-          "StandsStart" : moment(start).format('LLLL'),
-          'StandsEnd' : moment(end).format('LLLL'),
+          'originalName' : fileName,
+          'format' : format,
+          "startGMT" : moment(start).format('LLLL'),
+          'endGMT' : moment(end).format('LLLL'),
           'elapsed' : end -start,
           'bytes' : fileSize.size,
-          'width' : size,
-          'height' : size,
           'urlAccess' : thumbFileUrl,
           'status' : 'success',
           'error' : 'no'
         };
 
+        if(!isHeicSmall && size != 800){
+          firebaseData['output'][size]['width'] = size;
+          firebaseData['output'][size]['height'] = size;
+
+        }
+
         console.log("finished =>"+size);
 
-      // Upload to GCS
+     
       return size;
 
     });
 
     // 4. Run the upload operations
     await Promise.all(uploadPromises);
+
+    if(!sizes.includes(800)){
+      firebaseData['output']["800"] = {
+        "status" : "tooSmall"
+      };
+    }
 
 
     
